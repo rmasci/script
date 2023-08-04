@@ -240,10 +240,19 @@ func (p *Pipe) Close() error {
 
 // Column produces column col of each line of input, where the first column is
 // column 1, and columns are delimited by Unicode whitespace. Lines containing
-// fewer than col columns will be skipped.
-func (p *Pipe) Column(col int) *Pipe {
+// fewer than col columns will be skipped. optionally add a string to split the line by instead of a space.
+func (p *Pipe) Column(col int, d ...string) *Pipe {
+	var delim string
+	if len(d) > 0 {
+		delim = d[0]
+	}
 	return p.FilterScan(func(line string, w io.Writer) {
-		columns := strings.Fields(line)
+		var columns []string
+		if delim == "" {
+			columns = strings.Fields(line)
+		} else {
+			columns = strings.Split(line, delim)
+		}
 		if col > 0 && col <= len(columns) {
 			fmt.Fprintln(w, columns[col-1])
 		}
