@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -31,6 +32,7 @@ type Pipe struct {
 	stdout     io.Writer
 	stderr     io.Writer
 	httpClient *http.Client
+	Delimeter  string
 
 	// because pipe stages are concurrent, protect 'err'
 	mu  *sync.Mutex
@@ -241,20 +243,45 @@ func (p *Pipe) Close() error {
 // Column produces column col of each line of input, where the first column is
 // column 1, and columns are delimited by Unicode whitespace. Lines containing
 // fewer than col columns will be skipped. optionally add a string to split the line by instead of a space.
-func (p *Pipe) Column(col int, d ...string) *Pipe {
-	var delim string
-	if len(d) > 0 {
-		delim = d[0]
+func (p *Pipe) Column(a ...any) *Pipe {
+	delim := " "
+	var col int
+	var cols []int
+	switch len(a) {
+	case 0:
+		return p
+	case 1:
+		// works like past versions.
+		//if t == "int" {
+		col = a[0].(int)
+		//}
+	default:
+		for _, x := range a {
+			typeOf := fmt.Sprint(reflect.TypeOf(x))
+			switch typeOf {
+			case "int":
+				cols = append(cols, x.(int))
+				// if the user specifies a string, that string becomes the delimeter -- else it's whitespace.
+			case "string":
+				delim = x.(string)
+			}
+		}
 	}
 	return p.FilterScan(func(line string, w io.Writer) {
 		var columns []string
-		if delim == "" {
+		if delim == " " {
 			columns = strings.Fields(line)
 		} else {
 			columns = strings.Split(line, delim)
 		}
-		if col > 0 && col <= len(columns) {
+		if col > 0 && col <= len(columns) && len(cols) == 0 {
 			fmt.Fprintln(w, columns[col-1])
+		} else if len(cols) > 0 {
+			for i := 0; i <= len(cols)-2; i++ {
+				// looks odd, but to the user, column 1 is actually 0. So, we need cols[i], then subtract 1.
+				fmt.Fprintf(w, "%s%s", columns[cols[i]-1], delim)
+			}
+			fmt.Fprintln(w, columns[cols[len(cols)-1]-1])
 		}
 	})
 }
