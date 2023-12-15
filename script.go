@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -23,6 +22,7 @@ import (
 
 	"bitbucket.org/creachadair/shell"
 	"github.com/itchyny/gojq"
+	"github.com/rmasci/csvtable"
 )
 
 // Pipe represents a pipe object with an associated [ReadAutoCloser].
@@ -32,8 +32,6 @@ type Pipe struct {
 	stdout     io.Writer
 	stderr     io.Writer
 	httpClient *http.Client
-	Delimeter  string
-
 	// because pipe stages are concurrent, protect 'err'
 	mu  *sync.Mutex
 	err error
@@ -242,72 +240,16 @@ func (p *Pipe) Close() error {
 
 // Column produces column col of each line of input, where the first column is
 // column 1, and columns are delimited by Unicode whitespace. Lines containing
-// fewer than col columns will be skipped. optionally add a string to split the line by instead of a space.
-func (p *Pipe) Column(a ...any) *Pipe {
-	delim := " "
-	var col int
-	var cols []int
-	switch len(a) {
-	case 0:
-		return p
-	case 1:
-		// works like past versions.
-		//if t == "int" {
-		col = a[0].(int)
-		//}
-	default:
-		for _, x := range a {
-			typeOf := fmt.Sprint(reflect.TypeOf(x))
-			switch typeOf {
-			case "int":
-				cols = append(cols, x.(int))
-				// if the user specifies a string, that string becomes the delimeter -- else it's whitespace.
-			case "string":
-				delim = x.(string)
-			}
-		}
-	}
+// fewer than col columns will be skipped.
+func (p *Pipe) Column(col int) *Pipe {
 	return p.FilterScan(func(line string, w io.Writer) {
-		var columns []string
-		if delim == " " {
-			columns = strings.Fields(line)
-		} else {
-			columns = strings.Split(line, delim)
-		}
-		if col > 0 && col <= len(columns) && len(cols) == 0 {
+		columns := strings.Fields(line)
+		if col > 0 && col <= len(columns) {
 			fmt.Fprintln(w, columns[col-1])
-		} else if len(cols) > 0 {
-			for i := 0; i <= len(cols)-2; i++ {
-				// looks odd, but to the user, column 1 is actually 0. So, we need cols[i], then subtract 1.
-				fmt.Fprintf(w, "%s%s", columns[cols[i]-1], delim)
-			}
-			fmt.Fprintln(w, columns[cols[len(cols)-1]-1])
 		}
 	})
 }
 
-// Concat reads paths from the pipe, one per line, and produces the contents of
-// all the corresponding files in sequence. If there are any errors (for
-// example, non-existent files), these will be ignored, execution will
-// continue, and the pipe's error status will not be set.
-//
-// This makes it convenient to write programs that take a list of paths on the
-// command line. For example:
-//
-//	script.Args().Concat().Stdout()
-//
-// The list of paths could also come from a file:
-//
-//	script.File("filelist.txt").Concat()
-//
-// Or from the output of a command:
-//
-//	script.Exec("ls /var/app/config/").Concat().Stdout()
-//
-// Each input file will be closed once it has been fully read. If any of the
-// files can't be opened or read, Concat will simply skip these and carry on,
-// without setting the pipe's error status. This mimics the behaviour of Unix
-// cat(1).
 func (p *Pipe) Concat() *Pipe {
 	var readers []io.Reader
 	p.FilterScan(func(line string, w io.Writer) {
@@ -508,6 +450,65 @@ func (p *Pipe) ExitStatus() int {
 		return 0
 	}
 	return status
+}
+
+// Fields splits the input string into fields based on the specified input delimiter,
+// selects the fields at the specified indices, and then joins these fields with the
+// specified output delimiter. The indices are 1-based and negative indices count from
+// the end of the fields. If an index is out of range, it is ignored.
+//
+// For example, Fields("|", ",", 1, 3) applied to the string "field1|field2|field3|field4"
+// would return the string "field1,field3".
+//
+// Fields returns a new Pipe that will write the transformed string when its output is read.
+func (p *Pipe) Fields(inDelim, outDelim string, a ...int) *Pipe {
+	if len(a) <= 0 {
+		fmt.Println("Returned")
+		return p
+	}
+	return p.FilterScan(func(line string, w io.Writer) {
+		var columns []string
+		if inDelim == " " {
+			columns = strings.Fields(line)
+		} else {
+			columns = strings.Split(line, inDelim)
+		}
+		var out strings.Builder
+		for _, c := range a {
+			for i, col := range columns {
+				col = strings.TrimSpace(col)
+				if i == c-1 {
+					fmt.Fprint(&out, col+outDelim)
+				}
+			}
+		}
+		fmt.Fprintf(w, "%s\n", strings.TrimSuffix(out.String(), outDelim))
+	})
+}
+
+// String returns the pipe's contents as a string, together with any error.
+// func (p *Pipe) String() (string, error) {
+// 	data, err := p.Bytes()
+// 	if err != nil {
+// 		p.SetError(err)
+// 	}
+// 	return string(data), p.Error()
+// }
+
+func (p *Pipe) Table(options ...string) error {
+	data, err := p.Bytes()
+	if err != nil {
+		p.SetError(err)
+		return p.Error()
+	}
+	strData := string(data)
+	if !strings.Contains(strData, ",") {
+		p.SetError(fmt.Errorf("No Commas in string"))
+		return p.Error()
+	}
+	strData, err = csvtable.Table(strData, options...)
+	fmt.Println(strData)
+	return nil
 }
 
 // Filter sends the contents of the pipe to the function filter and produces

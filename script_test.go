@@ -197,7 +197,72 @@ func TestColumnSelects(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !cmp.Equal(tc.want, got) {
+				fmt.Println("Want:", tc.want)
+				fmt.Println("Got:", got)
 				t.Error(cmp.Diff(tc.want, got))
+			}
+		})
+	}
+}
+
+func TestFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		inDelim  string
+		outDelim string
+		fields   []int
+		input    string
+		want     string
+	}{
+		{
+			name:     "Test 1",
+			inDelim:  " ",
+			outDelim: ",",
+			fields:   []int{1, 3},
+			input:    "",
+			want:     "",
+		}, {
+			name:     "Test 2",
+			inDelim:  " ",
+			outDelim: ",",
+			fields:   []int{1, 3},
+			input:    " ",
+			want:     " ",
+		}, {
+			name:     "Test 3",
+			inDelim:  " ",
+			outDelim: ",",
+			fields:   []int{1, 3},
+			input:    "field1 field2 field3 field4",
+			want:     "field1,field3",
+		},
+		{
+			name:     "Test 4",
+			inDelim:  "|",
+			outDelim: ",",
+			fields:   []int{1, 4},
+			input:    "field1|field2|field3|field4",
+			want:     "field1,field4",
+		},
+		{
+			name:     "Test 5",
+			inDelim:  ";",
+			outDelim: ",",
+			fields:   []int{1, 4, 3, 2},
+			input:    "field1;     field2;field3; field4",
+			want:     "field1,field4,field3,field2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := script.NewPipe().Echo(tt.input)
+			got, _ := p.Fields(tt.inDelim, tt.outDelim, tt.fields...).String()
+
+			if diff := cmp.Diff(strings.TrimSpace(tt.want), strings.TrimSpace(got)); diff != "" {
+				t.Errorf("Fields() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -1821,6 +1886,14 @@ func ExamplePipe_ExitStatus() {
 	fmt.Println(p.ExitStatus())
 	// Output:
 	// 0
+}
+
+func ExamplePipe_Fields() {
+	p := script.NewPipe().Echo("field1|field2|field3|field4")
+	result, _ := p.Fields("|", ",", 1, 3).String()
+
+	fmt.Println(result)
+	// Output: field1,field3
 }
 
 func ExamplePipe_First() {
