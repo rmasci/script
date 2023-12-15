@@ -278,7 +278,34 @@ if err != nil {
 }
 ```
 In this case each time this is run we get a new file with a date stamp, we can see the output, but in the file we can see the raw json along with the Json Query
+# Fields
+Fields is like column but allows you to specify more than one column, and reorder those columns. Fields can also change the output delimeter. Lets say you've got an output in the pipeline that is semicolon separated ';'. You want only columns 1,4,7 and in the order of 7,4,1, and have them delimited by a '|'. 
+Usage Fields: inDelimeter, outDelimeter, Fields<comma separated>
+```go
+script.Echo("one;two;three;four;five;six;seven").Fields(";","|",7,4,1).Stdout()
+```
 
+# Table output
+Structure has to be in comma separated format. But will output to a table. Lets take the above sample, and rework it for table:
+```go
+script.Echo("one;two;three;four;five;six;seven).Fields(";",",",7,4,1).Table("Render=grid","Headline="Seven,Four,One")
+```
+Output:
+```
+╒══════════╤═════════╤════════╕
+│   Seven  │   Four  │   One  │
+╞══════════╪═════════╪════════╡
+│   seven  │   four  │   one  │
+└──────────┴─────────┴────────┘
+```
+Note: Table has a few options to it. See the documentation on options available. If your csv output has a header then you don't have to specify a 'Headline' option, and the default table is a text table similar to mysql client output. 
+```
++----------+---------+--------+
+|   Seven  |   Four  |   One  |
++==========+=========+========+
+|   seven  |   four  |   one  |
++----------+---------+--------+
+```
 # Documentation
 
 See [pkg.go.dev](https://pkg.go.dev/github.com/bitfield/script) for the full documentation, or read on for a summary.

@@ -486,15 +486,37 @@ func (p *Pipe) Fields(inDelim, outDelim string, a ...int) *Pipe {
 	})
 }
 
-// String returns the pipe's contents as a string, together with any error.
-// func (p *Pipe) String() (string, error) {
-// 	data, err := p.Bytes()
-// 	if err != nil {
-// 		p.SetError(err)
-// 	}
-// 	return string(data), p.Error()
-// }
-
+// Table creates a formatted table from the provided CSV string.
+// The function accepts an optional list of flags that can be used to customize the table's formatting.
+// The flags can be used to specify the table's render style, alignment, header presence, wrapping, indentation, line separation between rows, spacing, columns, and delimiter.
+// If the flags are not provided, the table is created with default settings.
+// The function returns the formatted table as a string and an error if any occurred during the table creation.
+// Try these with <render>-nohead when there is no header. Options are comma separated, "Render=grid","Headline=one,two,three"
+//
+//	+-------------+-------------------------------------------+---------------------------+
+//	| Option      | Description                               | Usage                     |
+//	+=============+===========================================+===========================+
+//	| Render      | How you want the table to be formatted    | Render=See Below          |
+//	| Align       | Left Center Right                         | Align=Left                |
+//	| NoHeader    | True/False                                | NoHeader=False            |
+//	| Wrap        | Wrap Text in cells                        | Wrap=true                 |
+//	| Headline    | Specify Header                            | Headline=One,Two,Three    |
+//	+-------------+-------------------------------------------+---------------------------+
+//
+// Render Formats:
+//
+//	+-----------+-------------------------------------+
+//	| Render    | Output Format                       |
+//	+===========+=====================================+
+//	| mysql     | Looks like a MySQL Client Query     |
+//	| grid      | Spreadsheet using Graphical Grid    |
+//	| gridt     | Spreadsheet using text grid         |
+//	| simple    | Simple Table                        |
+//	| html      | Output in HTML Table                |
+//	| tab       | Just text tab separated             |
+//	| csv       | Output in CSV format                |
+//	| plain     | Plain Table output                  |
+//	+-----------+-------------------------------------+
 func (p *Pipe) Table(options ...string) error {
 	data, err := p.Bytes()
 	if err != nil {
