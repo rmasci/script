@@ -16,4 +16,5 @@ func main() {
 	flag.StringVar(&delimeter, "d", " ", "Delimeter")
 	flag.Parse()
 	script.File("one2ten.txt").Column(delimeter, 6, 1, 8, 3).Match("six").Stdout()
+	script.File(file).Fields(delimeter, columns).Stdout(
 }
