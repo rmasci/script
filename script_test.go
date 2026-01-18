@@ -10,45 +10,36 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/rmasci/script"
+	"github.com/rogpeppe/go-internal/testscript"
 )
 
 func TestMain(m *testing.M) {
-	switch os.Getenv("SCRIPT_TEST") {
-	case "args":
-		// Print out command-line arguments
-		script.Args().Stdout()
-	case "stdin":
-		// Echo input to output
-		script.Stdin().Stdout()
-	default:
-		os.Exit(m.Run())
-	}
+	os.Exit(testscript.RunMain(m, map[string]func() int{
+		"args": func() int {
+			script.Args().Stdout()
+			return 0
+		},
+		"echostdin": func() int {
+			script.Stdin().Stdout()
+			return 0
+		},
+	}))
 }
 
-func TestArgsSuppliesCommandLineArgumentsAsInputToPipeOnePerLine(t *testing.T) {
+func TestScript(t *testing.T) {
 	t.Parallel()
-	// dummy test to prove coverage
-	script.Args()
-	// now the real test
-	cmd := exec.Command(os.Args[0], "hello", "world")
-	cmd.Env = append(os.Environ(), "SCRIPT_TEST=args")
-	got, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "hello\nworld\n"
-	if string(got) != want {
-		t.Errorf("want %q, got %q", want, string(got))
-	}
+	testscript.Run(t, testscript.Params{
+		Dir: "testdata/script",
+	})
 }
 
 func TestBasenameRemovesLeadingPathComponentsFromInputLines(t *testing.T) {
@@ -319,7 +310,7 @@ func TestDoPerformsSuppliedHTTPRequest(t *testing.T) {
 		fmt.Fprintln(w, "some data")
 	}))
 	defer ts.Close()
-	req, err := http.NewRequest(http.MethodGet, ts.URL, nil)
+	req, err := http.NewRequest(http.MethodGet, ts.URL, http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,17 +326,32 @@ func TestDoPerformsSuppliedHTTPRequest(t *testing.T) {
 
 func TestEachLine_FiltersInputThroughSuppliedFunction(t *testing.T) {
 	t.Parallel()
-	p := script.Echo("Hello\nGoodbye")
-	q := p.EachLine(func(line string, out *strings.Builder) {
-		out.WriteString(line + " world\n")
-	})
 	want := "Hello world\nGoodbye world\n"
-	got, err := q.String()
+	got, err := script.Echo("Hello\nGoodbye").
+		EachLine(func(line string, out *strings.Builder) {
+			out.WriteString(line + " world\n")
+		}).String()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != want {
 		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+func TestEachLine_HandlesLongLines(t *testing.T) {
+	t.Parallel()
+	var got int
+	_, err := script.Echo(longLine).
+		EachLine(func(line string, out *strings.Builder) {
+			got++
+		}).String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := 2
+	if want != got {
+		t.Errorf("want %d lines counted, got %d", want, got)
 	}
 }
 
@@ -390,6 +396,36 @@ func TestExecForEach_ErrorsOnUnbalancedQuotes(t *testing.T) {
 	p.Wait()
 	if p.Error() == nil {
 		t.Error("want error with unbalanced quotes in command line")
+	}
+}
+
+func TestExecForEach_SendsStderrOutputToPipeStderr(t *testing.T) {
+	t.Parallel()
+	buf := new(bytes.Buffer)
+	out, err := script.Echo("go").WithStderr(buf).ExecForEach("{{.}}").String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+	if !strings.Contains(buf.String(), "Usage") {
+		t.Errorf("want stderr output containing the word 'Usage', got %q", buf.String())
+	}
+}
+
+func TestExecSendsStderrOutputToPipeStderr(t *testing.T) {
+	t.Parallel()
+	buf := new(bytes.Buffer)
+	out, err := script.NewPipe().WithStderr(buf).Exec("go").String()
+	if err == nil {
+		t.Fatal("want error when command returns a non-zero exit status")
+	}
+	if out != "" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+	if !strings.Contains(buf.String(), "Usage") {
+		t.Errorf("want stderr output containing the word 'Usage', got %q", buf.String())
 	}
 }
 
@@ -464,7 +500,7 @@ func TestFilterReadsNoMoreThanRequested(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want != got {
-		t.Error(cmp.Diff(want, got))
+		t.Fatal(cmp.Diff(want, got))
 	}
 	wantRemaining := "secondline"
 	if wantRemaining != source.String() {
@@ -520,11 +556,29 @@ func TestFilterScan_FiltersInputLineByLine(t *testing.T) {
 	t.Parallel()
 	input := "hello\nworld\ngoodbye"
 	want := "world\n"
-	got, err := script.Echo(input).FilterScan(func(line string, w io.Writer) {
-		if strings.HasPrefix(line, "w") {
-			fmt.Fprintln(w, line)
-		}
-	}).String()
+	got, err := script.Echo(input).
+		FilterScan(func(line string, w io.Writer) {
+			if strings.HasPrefix(line, "w") {
+				fmt.Fprintln(w, line)
+			}
+		}).String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want != got {
+		t.Error(cmp.Diff(want, got))
+	}
+}
+
+func TestFilterScan_HandlesLongLines(t *testing.T) {
+	t.Parallel()
+	want := "last line\n"
+	got, err := script.Echo(longLine).
+		FilterScan(func(line string, w io.Writer) {
+			if strings.HasPrefix(line, "last") {
+				fmt.Fprintln(w, line)
+			}
+		}).String()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,6 +639,20 @@ func TestFirstHasNoEffectGivenLessThanNInputLines(t *testing.T) {
 	}
 }
 
+func TestFreqHandlesLongLines(t *testing.T) {
+	t.Parallel()
+	got, err := script.Echo(longLine).Freq().Slice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 results, got %d: %q", len(got), got)
+	}
+	if got[0] != "1 last line" {
+		t.Fatalf("wrong result: %q", got)
+	}
+}
+
 func TestFreqProducesCorrectFrequencyTableForInput(t *testing.T) {
 	t.Parallel()
 	input := strings.Join([]string{
@@ -622,7 +690,7 @@ func TestGetMakesHTTPGetRequestToGivenURL(t *testing.T) {
 	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			t.Errorf("want HTTP method GET, got %q", r.Method)
+			t.Fatalf("want HTTP method GET, got %q", r.Method)
 		}
 		fmt.Fprintln(w, "some data")
 	}))
@@ -675,13 +743,25 @@ func TestGetUsesPipeContentsAsRequestBody(t *testing.T) {
 			t.Fatal("reading request body", err)
 		}
 		if !cmp.Equal(want, got) {
-			t.Error(cmp.Diff(want, string(got)))
+			t.Fatalf(cmp.Diff(want, string(got)))
 		}
 	}))
 	defer ts.Close()
 	_, err := script.Echo("request data").Get(ts.URL).String()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestJoinHandlesLongLines(t *testing.T) {
+	t.Parallel()
+	result, err := script.Echo(longLine).Join().String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := len(longLine)
+	if want != len(result) {
+		t.Errorf("want result length %d, got %d", want, len(result))
 	}
 }
 
@@ -783,6 +863,18 @@ func TestLastDropsAllButLastNLinesOfInput(t *testing.T) {
 	input := "a\nb\nc\n"
 	want := "b\nc\n"
 	got, err := script.Echo(input).Last(2).String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want != got {
+		t.Error(cmp.Diff(want, got))
+	}
+}
+
+func TestLastHandlesLongLines(t *testing.T) {
+	t.Parallel()
+	want := "last line\n"
+	got, err := script.Echo(longLine).Last(1).String()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1027,7 +1119,7 @@ func TestPostPostsToGivenURLUsingPipeAsRequestBody(t *testing.T) {
 			t.Fatal("reading request body", err)
 		}
 		if !cmp.Equal(want, got) {
-			t.Error(cmp.Diff(want, string(got)))
+			t.Fatal(cmp.Diff(want, string(got)))
 		}
 		fmt.Fprintln(w, "response data")
 	}))
@@ -1098,6 +1190,39 @@ func TestSHA256Sums_OutputsCorrectHashForEachSpecifiedFile(t *testing.T) {
 	}
 }
 
+func TestTeeUsesConfiguredStdoutAsDefault(t *testing.T) {
+	t.Parallel()
+	buf := new(bytes.Buffer)
+	_, err := script.Echo("hello").WithStdout(buf).Tee().String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "hello"
+	got := buf.String()
+	if got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+func TestTeeWritesDataToSuppliedWritersAsWellAsToPipe(t *testing.T) {
+	t.Parallel()
+	buf1, buf2 := new(bytes.Buffer), new(bytes.Buffer)
+	got, err := script.Echo("hello world").Tee(buf1, buf2).String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "hello world"
+	if want != got {
+		t.Errorf("want %q on pipe, got %q", want, got)
+	}
+	if want != buf1.String() {
+		t.Errorf("want %q on writer 1, got %q", want, buf1.String())
+	}
+	if want != buf2.String() {
+		t.Errorf("want %q on writer 2, got %q", want, buf2.String())
+	}
+}
+
 func TestExecErrorsWhenTheSpecifiedCommandDoesNotExist(t *testing.T) {
 	t.Parallel()
 	p := script.Exec("doesntexist")
@@ -1115,10 +1240,10 @@ func TestExecRunsGoWithNoArgsAndGetsUsageMessagePlusErrorExitStatus2(t *testing.
 	p := script.Exec("go")
 	output, err := p.String()
 	if err == nil {
-		t.Error("want error when command returns a non-zero exit status")
+		t.Fatal("want error when command returns a non-zero exit status")
 	}
 	if !strings.Contains(output, "Usage") {
-		t.Errorf("want output containing the word 'usage', got %q", output)
+		t.Fatalf("want output containing the word 'Usage', got %q", output)
 	}
 	want := 2
 	got := p.ExitStatus()
@@ -1138,7 +1263,7 @@ func TestExecRunsGoHelpAndGetsUsageMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output, "Usage") {
-		t.Fatalf("want output containing the word 'usage', got %q", output)
+		t.Fatalf("want output containing the word 'Usage', got %q", output)
 	}
 }
 
@@ -1287,7 +1412,7 @@ func TestReadAutoCloser_ReadsAllDataFromSourceAndClosesItAutomatically(t *testin
 		t.Fatal(err)
 	}
 	if !cmp.Equal(want, got) {
-		t.Error(cmp.Diff(want, got))
+		t.Fatal(cmp.Diff(want, got))
 	}
 	_, err = io.ReadAll(acr)
 	if err == nil {
@@ -1307,27 +1432,19 @@ func TestSliceProducesElementsOfSpecifiedSliceOnePerLine(t *testing.T) {
 	}
 }
 
-func TestStdinReadsFromProgramStandardInput(t *testing.T) {
+func TestStdoutReturnsErrorGivenReadErrorOnPipe(t *testing.T) {
 	t.Parallel()
-	// dummy test to prove coverage
-	script.Stdin()
-	// now the real test
-	want := "hello world"
-	cmd := exec.Command(os.Args[0])
-	cmd.Env = append(os.Environ(), "SCRIPT_TEST=stdin")
-	cmd.Stdin = script.Echo(want)
-	got, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != want {
-		t.Errorf("want %q, got %q", want, string(got))
+	brokenReader := iotest.ErrReader(errors.New("oh no"))
+	_, err := script.NewPipe().WithStdout(io.Discard).
+		WithReader(brokenReader).Stdout()
+	if err == nil {
+		t.Fatal(nil)
 	}
 }
 
 func TestStdoutSendsPipeContentsToConfiguredStandardOutput(t *testing.T) {
 	t.Parallel()
-	buf := &bytes.Buffer{}
+	buf := new(bytes.Buffer)
 	want := "hello world"
 	p := script.File("testdata/hello.txt").WithStdout(buf)
 	wrote, err := p.Stdout()
@@ -1335,11 +1452,11 @@ func TestStdoutSendsPipeContentsToConfiguredStandardOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	if wrote != len(want) {
-		t.Errorf("want %d bytes written, got %d", len(want), wrote)
+		t.Fatalf("want %d bytes written, got %d", len(want), wrote)
 	}
 	got := buf.String()
 	if want != got {
-		t.Errorf("want %q, got %q", want, string(got))
+		t.Fatalf("want %q, got %q", want, string(got))
 	}
 	_, err = p.String()
 	if err == nil {
@@ -1361,7 +1478,7 @@ func TestAppendFile_AppendsAllItsInputToSpecifiedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if int(wrote) != len(extra) {
-		t.Errorf("want %d bytes written, got %d", len(extra), int(wrote))
+		t.Fatalf("want %d bytes written, got %d", len(extra), int(wrote))
 	}
 	// check file contains both contents
 	got, err := script.File(path).String()
@@ -1370,6 +1487,18 @@ func TestAppendFile_AppendsAllItsInputToSpecifiedFile(t *testing.T) {
 	}
 	if got != orig+extra {
 		t.Errorf("want %q, got %q", orig+extra, got)
+	}
+}
+
+func TestAppendFile_ReturnsBytesWrittenAndErrorGivenReadErrorOnPipe(t *testing.T) {
+	t.Parallel()
+	var want int64 = 1
+	got, err := script.NewPipe().WithReader(partialErrReader{}).AppendFile(t.TempDir() + "/tmp")
+	if err == nil {
+		t.Fatal("want error reading pipe with error status, got nil")
+	}
+	if !cmp.Equal(want, got) {
+		t.Error(cmp.Diff(want, got))
 	}
 }
 
@@ -1383,6 +1512,15 @@ func TestBytesOutputsInputBytesUnchanged(t *testing.T) {
 	}
 	if !cmp.Equal(want, got) {
 		t.Error(cmp.Diff(want, got))
+	}
+}
+
+func TestBytesReturnsErrorGivenReadErrorOnPipe(t *testing.T) {
+	t.Parallel()
+	brokenReader := iotest.ErrReader(errors.New("oh no"))
+	_, err := script.NewPipe().WithReader(brokenReader).Bytes()
+	if err == nil {
+		t.Fatal(nil)
 	}
 }
 
@@ -1407,6 +1545,15 @@ func TestCountLines_Counts0LinesInEmptyInput(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("want %d, got %d", want, got)
+	}
+}
+
+func TestCountLines_ReturnsErrorGivenReadErrorOnPipe(t *testing.T) {
+	t.Parallel()
+	brokenReader := iotest.ErrReader(errors.New("oh no"))
+	_, err := script.NewPipe().WithReader(brokenReader).CountLines()
+	if err == nil {
+		t.Fatal(nil)
 	}
 }
 
@@ -1442,6 +1589,24 @@ func TestSHA256Sum_OutputsCorrectHash(t *testing.T) {
 				t.Errorf("want %q, got %q", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestSHA256Sum_ReturnsErrorGivenReadErrorOnPipe(t *testing.T) {
+	t.Parallel()
+	brokenReader := iotest.ErrReader(errors.New("oh no"))
+	_, err := script.NewPipe().WithReader(brokenReader).SHA256Sum()
+	if err == nil {
+		t.Fatal(nil)
+	}
+}
+
+func TestSliceSink_ReturnsErrorGivenReadErrorOnPipe(t *testing.T) {
+	t.Parallel()
+	brokenReader := iotest.ErrReader(errors.New("oh no"))
+	_, err := script.NewPipe().WithReader(brokenReader).Slice()
+	if err == nil {
+		t.Fatal(nil)
 	}
 }
 
@@ -1507,6 +1672,15 @@ func TestStringOutputsInputStringUnchanged(t *testing.T) {
 	}
 }
 
+func TestStringReturnsErrorGivenReadErrorOnPipe(t *testing.T) {
+	t.Parallel()
+	brokenReader := iotest.ErrReader(errors.New("oh no"))
+	_, err := script.NewPipe().WithReader(brokenReader).String()
+	if err == nil {
+		t.Fatal(nil)
+	}
+}
+
 func TestWaitReadsPipeSourceToCompletion(t *testing.T) {
 	t.Parallel()
 	source := bytes.NewBufferString("hello")
@@ -1525,7 +1699,7 @@ func TestWriteFile_WritesInputToFileCreatingItIfNecessary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if int(wrote) != len(want) {
-		t.Errorf("want %d bytes written, got %d", len(want), int(wrote))
+		t.Fatalf("want %d bytes written, got %d", len(want), int(wrote))
 	}
 	got, err := script.File(path).String()
 	if err != nil {
@@ -1536,13 +1710,32 @@ func TestWriteFile_WritesInputToFileCreatingItIfNecessary(t *testing.T) {
 	}
 }
 
+// partialErrReader returns 1 and a non-EOF error on reading.
+type partialErrReader struct{}
+
+func (r partialErrReader) Read(p []byte) (int, error) {
+	return 1, errors.New("oh no")
+}
+
+func TestWriteFile_ReturnsBytesWrittenAndErrorGivenReadErrorOnPipe(t *testing.T) {
+	t.Parallel()
+	var want int64 = 1
+	got, err := script.NewPipe().WithReader(partialErrReader{}).WriteFile(t.TempDir() + "/tmp")
+	if err == nil {
+		t.Fatal("want error reading pipe with error status, got nil")
+	}
+	if !cmp.Equal(want, got) {
+		t.Error(cmp.Diff(want, got))
+	}
+}
+
 func TestWriteFile_TruncatesExistingFile(t *testing.T) {
 	t.Parallel()
 	want := "Hello, world"
 	path := t.TempDir() + "/" + t.Name()
 	// write some data first so we can check for truncation
 	data := make([]byte, 15)
-	err := os.WriteFile(path, data, 0600)
+	err := os.WriteFile(path, data, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1551,14 +1744,14 @@ func TestWriteFile_TruncatesExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if int(wrote) != len(want) {
-		t.Errorf("want %d bytes written, got %d", len(want), int(wrote))
+		t.Fatalf("want %d bytes written, got %d", len(want), int(wrote))
 	}
 	got, err := script.File(path).String()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got == want+"\x00\x00\x00" {
-		t.Errorf("file not truncated on write")
+		t.Fatalf("file not truncated on write")
 	}
 	if got != want {
 		t.Errorf("want %q, got %q", want, got)
@@ -1571,7 +1764,7 @@ func TestWithHTTPClient_SetsSuppliedClientOnPipe(t *testing.T) {
 		fmt.Fprintln(w, "some data")
 	}))
 	defer ts.Close()
-	req, err := http.NewRequest(http.MethodGet, ts.URL, nil)
+	req, err := http.NewRequest(http.MethodGet, ts.URL, http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1611,7 +1804,7 @@ func TestWithError_SetsSpecifiedErrorOnPipe(t *testing.T) {
 
 func TestWithStdout_SetsSpecifiedWriterAsStdout(t *testing.T) {
 	t.Parallel()
-	buf := &bytes.Buffer{}
+	buf := new(bytes.Buffer)
 	want := "Hello, world."
 	_, err := script.Echo(want).WithStdout(buf).Stdout()
 	if err != nil {
@@ -1657,7 +1850,7 @@ func TestExitStatus_CorrectlyParsesExitStatusValueFromErrorMessage(t *testing.T)
 	}
 	for _, tc := range tcs {
 		p := script.NewPipe()
-		p.SetError(fmt.Errorf(tc.input))
+		p.SetError(errors.New(tc.input))
 		got := p.ExitStatus()
 		if got != tc.want {
 			t.Errorf("input %q: want %d, got %d", tc.input, tc.want, got)
@@ -1688,7 +1881,7 @@ func TestReadReturnsEOFOnUninitialisedPipe(t *testing.T) {
 	buf := []byte{0} // try to read at least 1 byte
 	n, err := p.Read(buf)
 	if !errors.Is(err, io.EOF) {
-		t.Errorf("want EOF, got %v", err)
+		t.Fatalf("want io.EOF, got %v", err)
 	}
 	if n > 0 {
 		t.Errorf("unexpectedly read %d bytes", n)
@@ -1729,6 +1922,16 @@ func TestTeeOutput(t *testing.T) {
 	}
 }
 
+func TestReadReturnsErrorGivenReadErrorOnPipe(t *testing.T) {
+	t.Parallel()
+	brokenReader := iotest.ErrReader(errors.New("oh no"))
+	buf := make([]byte, 0)
+	_, err := script.NewPipe().WithReader(brokenReader).Read(buf)
+	if err == nil {
+		t.Fatal(nil)
+	}
+}
+
 func ExampleArgs() {
 	script.Args().Stdout()
 	// prints command-line arguments
@@ -1739,9 +1942,10 @@ func ExampleDo() {
 		fmt.Fprintln(w, "some data")
 	}))
 	defer ts.Close()
-	req, err := http.NewRequest(http.MethodGet, ts.URL, nil)
+	req, err := http.NewRequest(http.MethodGet, ts.URL, http.NoBody)
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
+		return
 	}
 	script.Do(req).Stdout()
 	// Output:
@@ -1858,7 +2062,8 @@ func ExamplePipe_Do() {
 	defer ts.Close()
 	req, err := http.NewRequest(http.MethodGet, ts.URL, strings.NewReader("hello"))
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
+		return
 	}
 	script.NewPipe().Do(req).Stdout()
 	// Output:
@@ -2126,6 +2331,40 @@ func ExamplePipe_String() {
 	// world
 }
 
+func ExamplePipe_Tee_stdout() {
+	s, err := script.Echo("hello\n").Tee().String()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(s)
+	// Output:
+	// hello
+	// hello
+}
+
+func ExamplePipe_Tee_writers() {
+	buf1, buf2 := new(bytes.Buffer), new(bytes.Buffer)
+	s, err := script.Echo("hello\n").Tee(buf1, buf2).String()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Print(s)
+	fmt.Print(buf1.String())
+	fmt.Print(buf2.String())
+	// Output:
+	// hello
+	// hello
+	// hello
+}
+
+func ExamplePipe_WithStderr() {
+	buf := new(bytes.Buffer)
+	script.NewPipe().WithStderr(buf).Exec("go").Wait()
+	fmt.Println(strings.Contains(buf.String(), "Usage"))
+	// Output:
+	// true
+}
+
 func ExampleSlice() {
 	input := []string{"1", "2", "3"}
 	script.Slice(input).Stdout()
@@ -2135,10 +2374,93 @@ func ExampleSlice() {
 	// 3
 }
 
-func ExampleTee() {
+func ExamplePipe_Tee() {
 	outFile, err := os.OpenFile("/path/to/file", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
-	script.Exec(`sqlrun -e "select * from appdata"`).Tee(outFile).Stdout()
 	if err != nil {
 		panic(err)
 	}
+	script.Exec(`sqlrun -e "select * from appdata"`).Tee(outFile).Stdout()
 }
+
+func TestSpinnerDisplaysMessageDuringPipeExecution(t *testing.T) {
+	t.Parallel()
+	// Test that Spinner wraps the pipe and displays a message
+	result, err := script.Echo("hello\nworld").
+		Spinner("Processing...").
+		String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Output should be unchanged
+	want := "hello\nworld"
+	if result != want {
+		t.Errorf("want %q, got %q", want, result)
+	}
+}
+
+func TestSpinnerWithCustomType(t *testing.T) {
+	t.Parallel()
+	// Test that Spinner works with custom spinner type
+	result, err := script.Echo("test").
+		Spinner("Working...", 1). // type 1: bar spinner
+		String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "test"
+	if result != want {
+		t.Errorf("want %q, got %q", want, result)
+	}
+}
+
+func TestSpinnerWithInvalidType(t *testing.T) {
+	t.Parallel()
+	// Test that invalid spinner type falls back to default
+	result, err := script.Echo("test").
+		Spinner("Working...", 999). // invalid type, should fall back to default
+		String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "test"
+	if result != want {
+		t.Errorf("want %q, got %q", want, result)
+	}
+}
+
+func TestSpinnerWithExec(t *testing.T) {
+	t.Parallel()
+	// Test that Spinner works with Exec
+	result, err := script.Echo("test").
+		Exec("cat").
+		Spinner("Running...").
+		String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "test"
+	if result != want {
+		t.Errorf("want %q, got %q", want, result)
+	}
+}
+
+func ExamplePipe_Spinner() {
+	// Display a spinner while executing a command and filtering output
+	script.Exec("echo hello; echo world").
+		Spinner("Processing...").
+		Match("hello").
+		Stdout()
+}
+
+func ExamplePipe_Spinner_withType() {
+	// Display a spinner with a specific type (type 1: bar animation)
+	script.Exec("echo hello; echo world").
+		Spinner("Processing...", 1).
+		Match("hello").
+		Stdout()
+}
+
+// A string containing a line longer than bufio.MaxScanTokenSize, for testing
+// methods that buffer input. We want to make sure they don't throw
+// "bufio.Scanner: token too long" errors.
+var longLine = strings.Repeat("super long line ", 4096) + "\nlast line\n"
