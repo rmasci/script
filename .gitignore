@@ -8,3 +8,9 @@ examples/visitors/visitors
 examples/*/go.sum
 .vscode/settings.json
 examples/ls/ls
+rmasci.go
+example/test.go
+example/password
+rmasci_test.go
+README_rmasci.md
+example/test.json
