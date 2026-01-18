@@ -5,7 +5,7 @@ go 1.21.4
 require (
 	github.com/google/go-cmp v0.5.9
 	github.com/itchyny/gojq v0.12.13
-	github.com/rmasci/csvtable v0.6.0
+	github.com/rmasci/csvtable v0.7.0
 	github.com/rogpeppe/go-internal v1.11.0
 	mvdan.cc/sh/v3 v3.7.0
 )
